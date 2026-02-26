@@ -6,6 +6,7 @@ import { getInflatedImageSize, getInflatedRowSize } from "#lib/inflate-size";
 import Packer from "#lib/packer";
 import PackerAsync from "#lib/packer-async";
 import Parser from "#lib/parser";
+import * as PNGSync from "#lib/png-sync";
 
 function createParserDependencies() {
   let noop = () => {};
@@ -30,6 +31,20 @@ function createPixelData(width, height) {
     data[i + 1] = 0;
     data[i + 2] = 0;
     data[i + 3] = 255;
+  }
+  return data;
+}
+
+function createPatternData(width, height) {
+  let data = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let idx = (width * y + x) << 2;
+      data[idx] = (x * 73 + y * 19) & 0xff;
+      data[idx + 1] = (x * 11 + y * 131) & 0xff;
+      data[idx + 2] = (x * 197 + y * 23) & 0xff;
+      data[idx + 3] = 0xff - ((x * 17 + y * 29) & 0xff);
+    }
   }
   return data;
 }
@@ -74,11 +89,32 @@ test("Packer constructor does not mutate options", () => {
     bitDepth: 8,
     colorType: 6,
     inputColorType: 6,
+    fastFilter: true,
   });
 
   assert.doesNotThrow(() => {
     new Packer(options);
   });
+});
+
+test("PNG.sync.write fastFilter preserves pixel data", () => {
+  let width = 9;
+  let height = 7;
+  let data = createPatternData(width, height);
+
+  let encoded = PNGSync.write(
+    {
+      width,
+      height,
+      data,
+    },
+    { fastFilter: true, filterType: -1 },
+  );
+  let decoded = PNGSync.read(encoded);
+
+  assert.strictEqual(decoded.width, width);
+  assert.strictEqual(decoded.height, height);
+  assert.ok(decoded.data.equals(data));
 });
 
 test("Parser constructor does not mutate options", () => {

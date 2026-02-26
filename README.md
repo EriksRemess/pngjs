@@ -122,6 +122,7 @@ As input any color type is accepted (grayscale, rgb, palette, grayscale with alp
 - `deflateStrategy` - compression strategy for deflate (default: 3)
 - `deflateFactory` - deflate stream factory (default: `zlib.createDeflate`)
 - `filterType` - png filtering method for scanlines (default: -1 => auto, accepts array of numbers 0-4)
+- `fastFilter` - when `true` and `filterType` is auto or an array, picks one filter from the first scanline and reuses it for all scanlines (faster write, potentially larger output)
 - `colorType` - the output colorType - see constants. 0 = grayscale, no alpha, 2 = color, no alpha, 4 = grayscale & alpha, 6 = color & alpha. Default currently 6, but in the future may calculate best mode.
 - `inputColorType` - the input colorType - see constants. Default is 6 (RGBA)
 - `bitDepth` - the bitDepth of the output, 8 or 16 bits. Input data is expected to have this bit depth.
