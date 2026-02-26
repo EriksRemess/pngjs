@@ -81,7 +81,7 @@ fs.createReadStream("in.png")
   .pipe(
     new PNG({
       filterType: 4,
-    })
+    }),
   )
   .on("parsed", function () {
     for (var y = 0; y < this.height; y++) {
@@ -244,7 +244,7 @@ fs.createReadStream("in.png")
         green: 255,
         blue: 0,
       },
-    })
+    }),
   )
   .on("parsed", function () {
     this.pack().pipe(fs.createWriteStream("out.png"));

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-let fs = require("fs"),
-  PNG = require("../lib/png").PNG;
+import fs from "node:fs";
+import { PNG } from "#lib/png";
 
 let srcFname = process.argv[2],
   dstFname = process.argv[3] || "out.png";

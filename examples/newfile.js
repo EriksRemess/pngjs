@@ -1,5 +1,9 @@
-let PNG = require("../lib/png").PNG;
-let fs = require("fs");
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { PNG } from "#lib/png";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let newfile = new PNG({ width: 10, height: 10 });
 

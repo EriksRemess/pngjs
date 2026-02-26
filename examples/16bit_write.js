@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-let fs = require("fs");
-let PNG = require("../lib/png").PNG;
+import fs from "node:fs";
+import { PNG } from "#lib/png";
 let w = 32;
 let h = 64;
 

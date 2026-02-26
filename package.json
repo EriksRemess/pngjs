@@ -1,7 +1,7 @@
 {
   "name": "pngjs",
   "version": "7.0.0",
-  "description": "PNG encoder/decoder in pure JS, supporting any bit size & interlace, async & sync with full test suite.",
+  "description": "PNG encoder/decoder for Node.js with async & sync APIs, supporting any bit size and interlace.",
   "contributors": [
     "Alexandre Paré",
     "Gaurav Mali",
@@ -30,24 +30,26 @@
     "pngjs"
   ],
   "engines": {
-    "node": ">=14.19.0"
+    "node": ">=24"
   },
+  "type": "module",
   "main": "./lib/png.js",
+  "exports": {
+    ".": "./lib/png.js"
+  },
+  "imports": {
+    "#lib/*": "./lib/*.js"
+  },
   "directories": {
     "lib": "lib",
     "example": "examples",
     "test": "test"
   },
   "files": [
-    "browser.js",
     "lib/"
   ],
   "scripts": {
-    "build": "yarn prepublish",
-    "prepublish": "yarn browserify",
-    "browserify": "browserify lib/png.js --standalone png > browser.js",
-    "coverage": "nyc --reporter=lcov --reporter=text-summary tape test/*-spec.js",
-    "test": "yarn lint && yarn prettier:check && tape test/*-spec.js | tap-dot && node test/run-compare",
+    "test": "npm run lint && npm run prettier:check && node --test test/*-spec.js",
     "lint": "eslint .",
     "prettier:write": "prettier --write .",
     "prettier:check": "prettier --check ."
@@ -61,16 +63,9 @@
     "url": "https://github.com/pngjs/pngjs/issues"
   },
   "devDependencies": {
-    "browserify": "17.0.0",
-    "buffer-equal": "1.0.1",
-    "connect": "3.7.0",
-    "eslint": "8.39.0",
-    "eslint-config-prettier": "8.8.0",
-    "nyc": "15.1.0",
-    "prettier": "2.8.8",
-    "puppeteer": "19.7.1",
-    "serve-static": "1.15.0",
-    "tap-dot": "2.0.0",
-    "tape": "5.6.3"
+    "@eslint/js": "10.0.1",
+    "eslint": "10.0.2",
+    "eslint-config-prettier": "10.1.8",
+    "prettier": "3.8.1"
   }
 }

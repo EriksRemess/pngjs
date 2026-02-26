@@ -1,0 +1,13 @@
+{
+  "name": "pngjs-benchmark",
+  "private": true,
+  "type": "module",
+  "description": "Benchmarks upstream pngjs against the local implementation in this repo",
+  "scripts": {
+    "bench": "node bench.mjs",
+    "bench:quick": "node bench.mjs --quick"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0"
+  }
+}

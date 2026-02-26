@@ -1,0 +1,205 @@
+import assert from "node:assert/strict";
+import { once } from "node:events";
+import test from "node:test";
+import ChunkStream from "#lib/chunkstream";
+import { getInflatedImageSize, getInflatedRowSize } from "#lib/inflate-size";
+import Packer from "#lib/packer";
+import PackerAsync from "#lib/packer-async";
+import Parser from "#lib/parser";
+
+function createParserDependencies() {
+  let noop = () => {};
+  return {
+    read: noop,
+    error: noop,
+    metadata: noop,
+    gamma: noop,
+    transColor: noop,
+    palette: noop,
+    parsed: noop,
+    inflateData: noop,
+    finished: noop,
+    simpleTransparency: noop,
+  };
+}
+
+function createPixelData(width, height) {
+  let data = Buffer.alloc(width * height * 4);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = 255;
+    data[i + 1] = 0;
+    data[i + 2] = 0;
+    data[i + 3] = 255;
+  }
+  return data;
+}
+
+function packWithPackerAsync(packer, data, width, height, gamma = 0) {
+  return new Promise((resolve, reject) => {
+    let chunks = [];
+
+    let onData = (chunk) => {
+      chunks.push(chunk);
+    };
+
+    let onEnd = () => {
+      cleanup();
+      resolve(Buffer.concat(chunks));
+    };
+
+    let onError = (err) => {
+      cleanup();
+      reject(err);
+    };
+
+    let cleanup = () => {
+      packer.removeListener("data", onData);
+      packer.removeListener("end", onEnd);
+      packer.removeListener("error", onError);
+    };
+
+    packer.on("data", onData);
+    packer.once("end", onEnd);
+    packer.once("error", onError);
+    packer.pack(data, width, height, gamma);
+  });
+}
+
+test("Packer constructor does not mutate options", () => {
+  let options = Object.freeze({
+    deflateChunkSize: 2048,
+    deflateLevel: 1,
+    deflateStrategy: 3,
+    inputHasAlpha: false,
+    bitDepth: 8,
+    colorType: 6,
+    inputColorType: 6,
+  });
+
+  assert.doesNotThrow(() => {
+    new Packer(options);
+  });
+});
+
+test("Parser constructor does not mutate options", () => {
+  let options = Object.freeze({ checkCRC: false });
+
+  assert.doesNotThrow(() => {
+    new Parser(options, createParserDependencies());
+  });
+});
+
+test("inflate-size helpers compute expected row and image sizes", () => {
+  assert.strictEqual(getInflatedRowSize({ width: 1, bpp: 1, depth: 1 }), 2);
+  assert.strictEqual(
+    getInflatedImageSize({ width: 1, height: 3, bpp: 1, depth: 1 }),
+    6,
+  );
+
+  assert.strictEqual(getInflatedRowSize({ width: 16, bpp: 4, depth: 8 }), 65);
+  assert.strictEqual(
+    getInflatedImageSize({ width: 16, height: 10, bpp: 4, depth: 8 }),
+    650,
+  );
+
+  assert.strictEqual(getInflatedRowSize({ width: 1, bpp: 4, depth: 16 }), 9);
+});
+
+test("ChunkStream reads exact length across writes", async () => {
+  let stream = new ChunkStream();
+  let got;
+
+  let readDone = new Promise((resolve) => {
+    stream.read(4, (buf) => {
+      got = buf;
+      resolve();
+    });
+  });
+
+  stream.write(Buffer.from("ab"));
+  stream.write(Buffer.from("cd"));
+
+  await readDone;
+  assert.strictEqual(got.toString(), "abcd");
+});
+
+test("ChunkStream allowLess read returns available bytes on end", async () => {
+  let stream = new ChunkStream();
+  let got;
+
+  let readDone = new Promise((resolve) => {
+    stream.read(-10, (buf) => {
+      got = buf;
+      resolve();
+    });
+  });
+
+  let closeDone = once(stream, "close");
+  stream.end(Buffer.from("abc"));
+
+  await readDone;
+  await closeDone;
+
+  assert.strictEqual(got.toString(), "abc");
+});
+
+test("ChunkStream emits error when ending with unsatisfied read", async () => {
+  let stream = new ChunkStream();
+  stream.read(5, () => {
+    assert.fail("read callback should not be called");
+  });
+
+  let errorPromise = once(stream, "error");
+  stream.end(Buffer.from("ab"));
+
+  let [err] = await errorPromise;
+  assert.ok(err instanceof Error);
+  assert.match(err.message, /Unexpected end of input/);
+});
+
+test("ChunkStream.end writes empty buffer payload", async () => {
+  class CountingChunkStream extends ChunkStream {
+    constructor() {
+      super();
+      this.writeCalls = 0;
+    }
+
+    write(data, encoding) {
+      this.writeCalls++;
+      return super.write(data, encoding);
+    }
+  }
+
+  let stream = new CountingChunkStream();
+  let closeDone = once(stream, "close");
+
+  stream.end(Buffer.alloc(0));
+  await closeDone;
+
+  assert.strictEqual(stream.writeCalls, 1);
+});
+
+test("PackerAsync emits error when pack called concurrently", async () => {
+  let packer = new PackerAsync();
+  let data = createPixelData(1, 1);
+
+  packer.on("data", () => {});
+  let errorPromise = once(packer, "error");
+  packer.pack(data, 1, 1, 0);
+  packer.pack(data, 1, 1, 0);
+
+  let [err] = await errorPromise;
+  assert.ok(err instanceof Error);
+  assert.match(err.message, /already running/);
+});
+
+test("PackerAsync can be reused sequentially", async () => {
+  let packer = new PackerAsync();
+  let data = createPixelData(2, 2);
+
+  let first = await packWithPackerAsync(packer, data, 2, 2, 0);
+  let second = await packWithPackerAsync(packer, data, 2, 2, 0);
+
+  assert.ok(first.equals(second));
+  assert.strictEqual(first.readUInt32BE(0), 0x89504e47);
+});

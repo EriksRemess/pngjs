@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-let fs = require("fs"),
-  PNG = require("../lib/png").PNG;
+import fs from "node:fs";
+import { PNG } from "#lib/png";
 
 let png = new PNG({
     filterType: -1,

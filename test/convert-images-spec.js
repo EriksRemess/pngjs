@@ -1,100 +1,107 @@
-let fs = require("fs");
-let PNG = require("../lib/png").PNG;
-let test = require("tape");
+import assert from "node:assert/strict";
+import { once } from "node:events";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { PNG } from "#lib/png";
 
-fs.readdir(__dirname + "/in/", function (err, files) {
-  if (err) throw err;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const inDir = path.join(__dirname, "in");
+const outDir = path.join(__dirname, "out");
+const outSyncDir = path.join(__dirname, "outsync");
 
-  files = files.filter(function (file) {
-    return Boolean(file.match(/\.png$/i));
+fs.mkdirSync(outDir, { recursive: true });
+fs.mkdirSync(outSyncDir, { recursive: true });
+
+let files = fs.readdirSync(inDir).filter(function (file) {
+  return Boolean(file.match(/\.png$/i));
+});
+
+console.log("Converting images");
+
+function parseFileAsync(filename) {
+  return new Promise((resolve, reject) => {
+    fs.createReadStream(filename)
+      .once("error", reject)
+      .pipe(new PNG())
+      .on("error", reject)
+      .on("parsed", function () {
+        resolve(this);
+      });
   });
+}
 
-  console.log("Converting images");
+function packToFile(png, filename) {
+  return new Promise((resolve, reject) => {
+    let out = fs.createWriteStream(filename);
+    out.once("error", reject);
+    png.pack().once("error", reject).pipe(out);
+    once(out, "finish").then(resolve, reject);
+  });
+}
 
-  files.forEach(function (file) {
-    let expectedError = false;
-    if (file.match(/^x/)) {
-      expectedError = true;
+files.forEach(function (file) {
+  let expectedError = false;
+  if (file.match(/^x/)) {
+    expectedError = true;
+  }
+
+  test("convert sync - " + file, { timeout: 1000 * 60 * 5 }, async () => {
+    let data = fs.readFileSync(path.join(inDir, file));
+    let png;
+    try {
+      png = PNG.sync.read(data);
+    } catch (e) {
+      if (!expectedError) {
+        assert.fail(
+          "Unexpected error parsing.." +
+            file +
+            "\n" +
+            e.message +
+            "\n" +
+            e.stack,
+        );
+      } else {
+        return;
+      }
     }
 
-    test("convert sync - " + file, function (t) {
-      t.timeoutAfter(1000 * 60 * 5);
+    if (expectedError) {
+      assert.fail("Sync: Error expected, parsed fine .. - " + file);
+    }
 
-      let data = fs.readFileSync(__dirname + "/in/" + file);
-      let png;
-      try {
-        png = PNG.sync.read(data);
-      } catch (e) {
-        if (!expectedError) {
-          t.fail(
-            "Unexpected error parsing.." +
-              file +
-              "\n" +
-              e.message +
-              "\n" +
-              e.stack
-          );
-        } else {
-          t.pass("completed");
-        }
-        return t.end();
+    let outpng = new PNG();
+    outpng.gamma = png.gamma;
+    outpng.data = png.data;
+    outpng.width = png.width;
+    outpng.height = png.height;
+    await packToFile(outpng, path.join(outSyncDir, file));
+  });
+
+  test("convert async - " + file, { timeout: 1000 * 60 * 5 }, async () => {
+    let png;
+    try {
+      png = await parseFileAsync(path.join(inDir, file));
+    } catch (err) {
+      if (!expectedError) {
+        assert.fail(
+          "Async: Unexpected error parsing.." +
+            file +
+            "\n" +
+            err.message +
+            "\n" +
+            err.stack,
+        );
+      } else {
+        return;
       }
+    }
 
-      if (expectedError) {
-        t.fail("Sync: Error expected, parsed fine .. - " + file);
-        return t.end();
-      }
+    if (expectedError) {
+      assert.fail("Async: Error expected, parsed fine .." + file);
+    }
 
-      let outpng = new PNG();
-      outpng.gamma = png.gamma;
-      outpng.data = png.data;
-      outpng.width = png.width;
-      outpng.height = png.height;
-      outpng.pack().pipe(
-        fs
-          .createWriteStream(__dirname + "/outsync/" + file)
-          .on("finish", function () {
-            t.pass("completed");
-            t.end();
-          })
-      );
-    });
-
-    test("convert async - " + file, function (t) {
-      t.timeoutAfter(1000 * 60 * 5);
-
-      fs.createReadStream(__dirname + "/in/" + file)
-        .pipe(new PNG())
-        .on("error", function (err) {
-          if (!expectedError) {
-            t.fail(
-              "Async: Unexpected error parsing.." +
-                file +
-                "\n" +
-                err.message +
-                "\n" +
-                err.stack
-            );
-          } else {
-            t.pass("completed");
-          }
-          t.end();
-        })
-        .on("parsed", function () {
-          if (expectedError) {
-            t.fail("Async: Error expected, parsed fine .." + file);
-            return t.end();
-          }
-
-          this.pack().pipe(
-            fs
-              .createWriteStream(__dirname + "/out/" + file)
-              .on("finish", function () {
-                t.pass("completed");
-                t.end();
-              })
-          );
-        });
-    });
+    await packToFile(png, path.join(outDir, file));
   });
 });
