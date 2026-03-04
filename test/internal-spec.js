@@ -119,6 +119,17 @@ test("bitPacker fast path validates input length", () => {
   );
 });
 
+test("bitPacker fast path accepts RGBA data when inputHasAlpha is false", () => {
+  let packed = bitPacker(Buffer.alloc(16), 2, 2, {
+    bitDepth: 8,
+    colorType: 6,
+    inputColorType: 6,
+    inputHasAlpha: false,
+  });
+
+  assert.strictEqual(packed.length, 16);
+});
+
 test("bitPacker uses fast opaque RGBA to RGB conversion", () => {
   let packed = bitPacker(
     Buffer.from([11, 22, 33, 255, 44, 55, 66, 255]),
