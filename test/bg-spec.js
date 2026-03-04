@@ -27,6 +27,7 @@ test(
       width: 10,
       height: 10,
       filterType: -1,
+      fastFilter: false,
     });
 
     for (let y = 0; y < png.height; y++) {

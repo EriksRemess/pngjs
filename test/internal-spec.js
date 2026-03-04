@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
+import bitPacker from "#lib/bitpacker";
 import ChunkStream from "#lib/chunkstream";
 import { getInflatedImageSize, getInflatedRowSize } from "#lib/inflate-size";
 import Packer from "#lib/packer";
@@ -95,6 +96,55 @@ test("Packer constructor does not mutate options", () => {
   assert.doesNotThrow(() => {
     new Packer(options);
   });
+});
+
+test("Packer fastFilter defaults to true and can be disabled", () => {
+  assert.strictEqual(new Packer()._options.fastFilter, true);
+  assert.strictEqual(
+    new Packer({ fastFilter: false })._options.fastFilter,
+    false,
+  );
+});
+
+test("bitPacker fast path validates input length", () => {
+  assert.throws(
+    () =>
+      bitPacker(Buffer.alloc(15), 2, 2, {
+        bitDepth: 8,
+        colorType: 6,
+        inputColorType: 6,
+        inputHasAlpha: true,
+      }),
+    /input data length mismatch: expected 16 bytes, got 15/,
+  );
+});
+
+test("bitPacker uses fast opaque RGBA to RGB conversion", () => {
+  let packed = bitPacker(
+    Buffer.from([11, 22, 33, 255, 44, 55, 66, 255]),
+    2,
+    1,
+    {
+      bitDepth: 8,
+      colorType: 2,
+      inputColorType: 6,
+      inputHasAlpha: true,
+      bgColor: { red: 0, green: 0, blue: 0 },
+    },
+  );
+
+  assert.ok(packed.equals(Buffer.from([11, 22, 33, 44, 55, 66])));
+});
+
+test("bitPacker still blends non-opaque RGBA to RGB", () => {
+  let packed = bitPacker(Buffer.from([100, 150, 200, 128]), 1, 1, {
+    bitDepth: 8,
+    colorType: 2,
+    inputColorType: 6,
+    inputHasAlpha: true,
+  });
+
+  assert.ok(packed.equals(Buffer.from([177, 202, 227])));
 });
 
 test("PNG.sync.write fastFilter preserves pixel data", () => {
