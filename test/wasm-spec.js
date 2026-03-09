@@ -48,3 +48,64 @@ test("wasm toBuffer round-trips through local parser", async () => {
   assert.equal(reparsed.height, parsed.height);
   assert.ok(reparsed.data.equals(parsed.data));
 });
+
+test("wasm sync.write honors fastFilter and deflateStrategy options", () => {
+  const width = 32;
+  const height = 32;
+  const data = Buffer.alloc(width * height * 4);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (width * y + x) << 2;
+      data[idx] = (x * 17 + y * 11) & 0xff;
+      data[idx + 1] = (x * 19 + y * 7) & 0xff;
+      data[idx + 2] = (x * 3 + y * 23) & 0xff;
+      data[idx + 3] = 255;
+    }
+  }
+
+  const src = { width, height, data };
+  const fast = WasmPNG.sync.write(src, {
+    filterType: -1,
+    fastFilter: true,
+    deflateLevel: 6,
+    deflateStrategy: 3,
+  });
+  const slow = WasmPNG.sync.write(src, {
+    filterType: -1,
+    fastFilter: false,
+    deflateLevel: 6,
+    deflateStrategy: 3,
+  });
+  const huffman = WasmPNG.sync.write(src, {
+    filterType: -1,
+    fastFilter: true,
+    deflateLevel: 6,
+    deflateStrategy: 2,
+  });
+  const fastJs = LocalPNG.sync.write(src, {
+    filterType: -1,
+    fastFilter: true,
+    deflateLevel: 6,
+    deflateStrategy: 3,
+  });
+  const slowJs = LocalPNG.sync.write(src, {
+    filterType: -1,
+    fastFilter: false,
+    deflateLevel: 6,
+    deflateStrategy: 3,
+  });
+  const huffmanJs = LocalPNG.sync.write(src, {
+    filterType: -1,
+    fastFilter: true,
+    deflateLevel: 6,
+    deflateStrategy: 2,
+  });
+
+  assert.ok(LocalPNG.sync.read(fast).data.equals(data));
+  assert.ok(LocalPNG.sync.read(slow).data.equals(data));
+  assert.ok(LocalPNG.sync.read(huffman).data.equals(data));
+  assert.ok(fast.equals(fastJs));
+  assert.ok(slow.equals(slowJs));
+  assert.ok(huffman.equals(huffmanJs));
+});

@@ -2,6 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { Stream } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { deflateSync } from "node:zlib";
+import constants from "../lib/constants.js";
+import Packer from "../lib/packer.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const wasmPath = path.join(__dirname, "png.wasm");
@@ -40,6 +43,11 @@ function createApi(instance) {
     return Buffer.from(memoryViewCache.u8.slice(ptr, ptr + len));
   }
 
+  function viewFromWasm(ptr, len) {
+    refreshViews();
+    return Buffer.from(exports.memory.buffer, ptr, len);
+  }
+
   function readResult(ptr) {
     refreshViews();
     const wordOffset = ptr >>> 2;
@@ -54,6 +62,15 @@ function createApi(instance) {
     const payload = copyFromWasm(ptr + 32, payloadLen);
     exports.dealloc(ptr, payloadLen + 32);
     return { status, field1, field2, field3, field4, field5, field6, payload };
+  }
+
+  function readResultView(ptr) {
+    refreshViews();
+    const wordOffset = ptr >>> 2;
+    return {
+      status: memoryViewCache.u32[wordOffset],
+      payloadLen: memoryViewCache.u32[wordOffset + 7],
+    };
   }
 
   function callRead(input, options = {}) {
@@ -91,37 +108,47 @@ function createApi(instance) {
   }
 
   function normalizeWriteOptions(png, options = {}) {
-    const colorType =
-      typeof options.colorType === "number" ? options.colorType : 6;
-    const inputColorType =
-      typeof options.inputColorType === "number" ? options.inputColorType : 6;
-    const bitDepth = options.bitDepth || 8;
-    const inputHasAlpha =
-      options.inputHasAlpha != null ? options.inputHasAlpha : true;
-    const bgColor = options.bgColor || {};
+    const packer = new Packer(options);
+    const normalizedOptions = packer._options;
+    const bitDepth = normalizedOptions.bitDepth;
+    const bgColor = normalizedOptions.bgColor || {};
+    const filterType =
+      !("filterType" in normalizedOptions) ||
+      normalizedOptions.filterType === -1
+        ? [0, 1, 2, 3, 4]
+        : typeof normalizedOptions.filterType === "number"
+          ? [normalizedOptions.filterType]
+          : Array.isArray(normalizedOptions.filterType)
+            ? normalizedOptions.filterType.slice()
+            : null;
+
+    if (!filterType) {
+      throw new Error("unrecognised filter types");
+    }
+
+    let filterMask = 0;
+    for (const filter of filterType) {
+      if (!Number.isInteger(filter) || filter < 0 || filter > 4) {
+        throw new Error("unrecognised filter types");
+      }
+      filterMask |= 1 << filter;
+    }
 
     return {
+      packer,
       width: png.width,
       height: png.height,
+      gamma: png.gamma || 0,
       gammaScaled: Math.max(0, Math.floor((png.gamma || 0) * 100000)),
-      colorType,
+      colorType: normalizedOptions.colorType,
       bitDepth,
-      inputColorType,
-      inputHasAlpha,
+      inputColorType: normalizedOptions.inputColorType,
+      inputHasAlpha: normalizedOptions.inputHasAlpha,
       bgRed: bgColor.red ?? (bitDepth === 16 ? 65535 : 255),
       bgGreen: bgColor.green ?? (bitDepth === 16 ? 65535 : 255),
       bgBlue: bgColor.blue ?? (bitDepth === 16 ? 65535 : 255),
-      // The wasm encoder is fastest with low compression and Sub filtering.
-      compressionLevel: options.deflateLevel != null ? options.deflateLevel : 3,
-      filter: Array.isArray(options.filterType)
-        ? options.filterType.length === 1 && options.filterType[0] >= 0
-          ? options.filterType[0]
-          : 255
-        : typeof options.filterType === "number"
-          ? options.filterType >= 0
-            ? options.filterType
-            : 255
-          : 1,
+      filterMask,
+      fastFilter: normalizedOptions.fastFilter === true,
     };
   }
 
@@ -131,9 +158,9 @@ function createApi(instance) {
     }
 
     const meta = normalizeWriteOptions(png, options);
-    const data = Buffer.from(png.data);
+    const data = Buffer.isBuffer(png.data) ? png.data : Buffer.from(png.data);
     const dataPtr = copyIntoWasm(data);
-    const resultPtr = exports.png_sync_write(
+    const resultPtr = exports.png_filter_pack(
       dataPtr,
       data.length,
       meta.width,
@@ -146,17 +173,36 @@ function createApi(instance) {
       meta.bgRed,
       meta.bgGreen,
       meta.bgBlue,
-      meta.compressionLevel,
-      meta.filter,
+      meta.filterMask,
+      Number(meta.fastFilter),
     );
     exports.dealloc(dataPtr, data.length);
-    const result = readResult(resultPtr);
+    const result = readResultView(resultPtr);
 
     if (result.status !== 0) {
-      throw new Error(result.payload.toString("utf8"));
+      const err = readResult(resultPtr);
+      throw new Error(err.payload.toString("utf8"));
     }
 
-    return result.payload;
+    const filtered = viewFromWasm(resultPtr + 32, result.payloadLen);
+    const compressed = deflateSync(filtered, meta.packer.getDeflateOptions());
+    exports.dealloc(resultPtr, result.payloadLen + 32);
+    if (!compressed?.length) {
+      throw new Error("bad png - invalid compressed data response");
+    }
+
+    const chunks = [
+      Buffer.from(constants.PNG_SIGNATURE),
+      meta.packer.packIHDR(meta.width, meta.height),
+    ];
+
+    if (meta.gamma) {
+      chunks.push(meta.packer.packGAMA(meta.gamma));
+    }
+
+    chunks.push(meta.packer.packIDAT(compressed));
+    chunks.push(meta.packer.packIEND());
+    return Buffer.concat(chunks);
   }
 
   return { callRead, callWrite };

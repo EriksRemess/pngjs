@@ -1,4 +1,4 @@
-use png::{BitDepth, ColorType, Compression, Decoder, Encoder, Filter, Transformations};
+use png::{BitDepth, ColorType, Decoder, Transformations};
 use std::io::Cursor;
 
 const HEADER_WORDS: usize = 8;
@@ -59,15 +59,14 @@ fn leak_vec(mut data: Vec<u8>) -> *mut u8 {
     ptr
 }
 
-fn clone_input(ptr: *const u8, len: u32) -> Result<Vec<u8>, String> {
+fn input_slice<'a>(ptr: *const u8, len: u32) -> Result<&'a [u8], String> {
     if ptr.is_null() {
         return Err("null input pointer".to_string());
     }
 
     let len = len as usize;
     // SAFETY: The caller provides a valid wasm memory pointer/length pair.
-    let input = unsafe { std::slice::from_raw_parts(ptr, len) };
-    Ok(input.to_vec())
+    Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
 fn extract_gamma_scaled(input: &[u8]) -> Result<u32, String> {
@@ -224,24 +223,6 @@ fn decode_png(input: &[u8], ignore_checksums: bool) -> Result<DecodeResult, Stri
     })
 }
 
-fn as_bit_depth(bit_depth: u32) -> Result<BitDepth, String> {
-    match bit_depth {
-        8 => Ok(BitDepth::Eight),
-        16 => Ok(BitDepth::Sixteen),
-        other => Err(format!("unsupported bit depth {other}")),
-    }
-}
-
-fn as_color_type(color_type: u32) -> Result<ColorType, String> {
-    match color_type {
-        COLORTYPE_GRAYSCALE => Ok(ColorType::Grayscale),
-        COLORTYPE_COLOR => Ok(ColorType::Rgb),
-        COLORTYPE_ALPHA => Ok(ColorType::GrayscaleAlpha),
-        COLORTYPE_COLOR_ALPHA => Ok(ColorType::Rgba),
-        other => Err(format!("unsupported color type {other}")),
-    }
-}
-
 fn bytes_per_pixel(color_type: u32, bit_depth: u32) -> Result<usize, String> {
     let samples = match color_type {
         COLORTYPE_GRAYSCALE => 1,
@@ -257,6 +238,16 @@ fn bytes_per_pixel(color_type: u32, bit_depth: u32) -> Result<usize, String> {
     };
 
     Ok(samples * bytes_per_sample)
+}
+
+fn samples_per_pixel(color_type: u32) -> Result<usize, String> {
+    match color_type {
+        COLORTYPE_GRAYSCALE => Ok(1),
+        COLORTYPE_COLOR => Ok(3),
+        COLORTYPE_ALPHA => Ok(2),
+        COLORTYPE_COLOR_ALPHA => Ok(4),
+        other => Err(format!("unsupported color type {other}")),
+    }
 }
 
 fn clamp_round(value: f32, max_value: f32) -> u16 {
@@ -376,39 +367,238 @@ fn convert_pixels(
     Ok(out)
 }
 
-fn compression_from_level(level: u32) -> Compression {
-    match level {
-        0..=3 => Compression::Fast,
-        4..=6 => Compression::Balanced,
-        _ => Compression::High,
+fn can_filter_input_directly(data: &[u8], options: &EncodeOptions) -> Result<bool, String> {
+    if options.bit_depth != 8 || options.input_color_type != options.color_type {
+        return Ok(false);
     }
-}
 
-fn filter_from_value(value: u32) -> Filter {
-    match value {
-        0 => Filter::NoFilter,
-        1 => Filter::Sub,
-        2 => Filter::Up,
-        3 => Filter::Avg,
-        4 => Filter::Paeth,
-        _ => Filter::Adaptive,
-    }
+    let expected_len = options.width as usize
+        * options.height as usize
+        * bytes_per_pixel(options.color_type, options.bit_depth)?;
+    Ok(data.len() == expected_len)
 }
 
 struct EncodeOptions {
     width: u32,
     height: u32,
-    gamma_scaled: u32,
     color_type: u32,
     bit_depth: u32,
     input_color_type: u32,
     input_has_alpha: bool,
     bg: [u16; 3],
-    compression_level: u32,
-    filter: u32,
+    filter_mask: u32,
+    fast_filter: bool,
 }
 
-fn encode_png(data: &[u8], options: &EncodeOptions) -> Result<Vec<u8>, String> {
+fn allowed_filters(mask: u32) -> Vec<u8> {
+    let mut filters = Vec::with_capacity(5);
+    for filter in 0..=4_u8 {
+        if mask & (1_u32 << filter) != 0 {
+            filters.push(filter);
+        }
+    }
+    if filters.is_empty() {
+        filters.extend_from_slice(&[0, 1, 2, 3, 4]);
+    }
+    filters
+}
+
+fn paeth_predictor(left: u8, up: u8, up_left: u8) -> i16 {
+    let left = left as i16;
+    let up = up as i16;
+    let up_left = up_left as i16;
+    let p = left + up - up_left;
+    let pa = (p - left).abs();
+    let pb = (p - up).abs();
+    let pc = (p - up_left).abs();
+
+    if pa <= pb && pa <= pc {
+        left
+    } else if pb <= pc {
+        up
+    } else {
+        up_left
+    }
+}
+
+fn filter_sum(filter: u8, current: &[u8], previous: Option<&[u8]>, bpp: usize) -> i64 {
+    if filter == 0 {
+        return current.iter().map(|&value| i64::from(value)).sum();
+    }
+
+    if filter == 1 {
+        let mut sum = 0_i64;
+        for &value in &current[..bpp.min(current.len())] {
+            sum += i64::from(value);
+        }
+        for x in bpp..current.len() {
+            sum += i64::from((current[x] as i16 - current[x - bpp] as i16).abs());
+        }
+        return sum;
+    }
+
+    if filter == 2 {
+        return match previous {
+            None => current.iter().map(|&value| i64::from(value)).sum(),
+            Some(previous) => current
+                .iter()
+                .zip(previous.iter())
+                .map(|(&value, &up)| i64::from((value as i16 - up as i16).abs()))
+                .sum(),
+        };
+    }
+
+    let mut sum = 0_i64;
+
+    for x in 0..current.len() {
+        let left = if x >= bpp { current[x - bpp] } else { 0 };
+        let up = previous.map_or(0, |row| row[x]);
+        let up_left = if x >= bpp {
+            previous.map_or(0, |row| row[x - bpp])
+        } else {
+            0
+        };
+
+        let value = current[x] as i16;
+        let filtered = match filter {
+            0 => value,
+            1 => value - left as i16,
+            2 => value - up as i16,
+            3 => value - (((left as i16) + (up as i16)) >> 1),
+            4 => value - paeth_predictor(left, up, up_left),
+            _ => value,
+        };
+        sum += i64::from(filtered.abs());
+    }
+
+    sum
+}
+
+fn write_filtered_row(
+    filter: u8,
+    current: &[u8],
+    previous: Option<&[u8]>,
+    bpp: usize,
+    out: &mut [u8],
+) {
+    out[0] = filter;
+
+    if filter == 0 {
+        out[1..].copy_from_slice(current);
+        return;
+    }
+
+    if filter == 1 {
+        let prefix_len = bpp.min(current.len());
+        out[1..1 + prefix_len].copy_from_slice(&current[..prefix_len]);
+        for x in bpp..current.len() {
+            out[1 + x] = current[x].wrapping_sub(current[x - bpp]);
+        }
+        return;
+    }
+
+    if filter == 2 {
+        if let Some(previous) = previous {
+            for x in 0..current.len() {
+                out[1 + x] = current[x].wrapping_sub(previous[x]);
+            }
+        } else {
+            out[1..].copy_from_slice(current);
+        }
+        return;
+    }
+
+    for x in 0..current.len() {
+        let left = if x >= bpp { current[x - bpp] } else { 0 };
+        let up = previous.map_or(0, |row| row[x]);
+        let up_left = if x >= bpp {
+            previous.map_or(0, |row| row[x - bpp])
+        } else {
+            0
+        };
+
+        let value = current[x] as i16;
+        let filtered = match filter {
+            0 => value,
+            1 => value - left as i16,
+            2 => value - up as i16,
+            3 => value - (((left as i16) + (up as i16)) >> 1),
+            4 => value - paeth_predictor(left, up, up_left),
+            _ => value,
+        };
+        out[1 + x] = filtered as u8;
+    }
+}
+
+fn filter_data(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    color_type: u32,
+    bit_depth: u32,
+    filter_mask: u32,
+    fast_filter: bool,
+) -> Result<Vec<u8>, String> {
+    let mut filters = allowed_filters(filter_mask);
+    let bpp = samples_per_pixel(color_type)? * if bit_depth == 16 { 2 } else { 1 };
+    let byte_width = width as usize * bpp;
+    let expected_len = byte_width * height as usize;
+    if data.len() != expected_len {
+        return Err(format!(
+            "packed data length mismatch: expected {expected_len}, got {}",
+            data.len()
+        ));
+    }
+
+    let stride = byte_width + 1;
+    let mut out = vec![0_u8; stride * height as usize];
+    let choose_once = fast_filter && filters.len() > 1 && height > 0;
+    if choose_once {
+        let selected_filter = *filters
+            .iter()
+            .min_by_key(|&&filter| filter_sum(filter, &data[..byte_width], None, bpp))
+            .unwrap();
+        filters = vec![selected_filter];
+    }
+
+    for row in 0..height as usize {
+        let start = row * byte_width;
+        let current = &data[start..start + byte_width];
+        let previous = if row == 0 {
+            None
+        } else {
+            Some(&data[start - byte_width..start])
+        };
+        let out_start = row * stride;
+        let out_end = out_start + stride;
+
+        let filter = if filters.len() == 1 {
+            filters[0]
+        } else {
+            *filters
+                .iter()
+                .min_by_key(|&&candidate| filter_sum(candidate, current, previous, bpp))
+                .unwrap()
+        };
+        write_filtered_row(filter, current, previous, bpp, &mut out[out_start..out_end]);
+    }
+
+    Ok(out)
+}
+
+fn filter_png(data: &[u8], options: &EncodeOptions) -> Result<Vec<u8>, String> {
+    if can_filter_input_directly(data, options)? {
+        return filter_data(
+            data,
+            options.width,
+            options.height,
+            options.color_type,
+            options.bit_depth,
+            options.filter_mask,
+            options.fast_filter,
+        );
+    }
+
     let converted = convert_pixels(
         data,
         options.width,
@@ -419,30 +609,15 @@ fn encode_png(data: &[u8], options: &EncodeOptions) -> Result<Vec<u8>, String> {
         options.color_type,
         options.bg,
     )?;
-
-    let mut out = Vec::new();
-    let mut encoder = Encoder::new(&mut out, options.width, options.height);
-    encoder.set_color(as_color_type(options.color_type)?);
-    encoder.set_depth(as_bit_depth(options.bit_depth)?);
-    encoder.set_compression(compression_from_level(options.compression_level));
-    encoder.set_filter(filter_from_value(options.filter));
-
-    let mut writer = encoder
-        .write_header()
-        .map_err(|err| format!("encode error: {err}"))?;
-
-    if options.gamma_scaled != 0 {
-        writer
-            .write_chunk(png::chunk::gAMA, &options.gamma_scaled.to_be_bytes())
-            .map_err(|err| format!("encode error: {err}"))?;
-    }
-
-    writer
-        .write_image_data(&converted)
-        .map_err(|err| format!("encode error: {err}"))?;
-
-    drop(writer);
-    Ok(out)
+    filter_data(
+        &converted,
+        options.width,
+        options.height,
+        options.color_type,
+        options.bit_depth,
+        options.filter_mask,
+        options.fast_filter,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -464,7 +639,7 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: u32) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn png_sync_read(ptr: *const u8, len: u32, ignore_checksums: u32) -> *mut u8 {
-    let input = match clone_input(ptr, len) {
+    let input = match input_slice(ptr, len) {
         Ok(input) => input,
         Err(err) => return pack_error(err),
     };
@@ -498,12 +673,12 @@ pub extern "C" fn png_sync_read(ptr: *const u8, len: u32, ignore_checksums: u32)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn png_sync_write(
+pub extern "C" fn png_filter_pack(
     data_ptr: *const u8,
     data_len: u32,
     width: u32,
     height: u32,
-    gamma_scaled: u32,
+    _gamma_scaled: u32,
     color_type: u32,
     bit_depth: u32,
     input_color_type: u32,
@@ -511,10 +686,10 @@ pub extern "C" fn png_sync_write(
     bg_red: u32,
     bg_green: u32,
     bg_blue: u32,
-    compression_level: u32,
-    filter: u32,
+    filter_mask: u32,
+    fast_filter: u32,
 ) -> *mut u8 {
-    let data = match clone_input(data_ptr, data_len) {
+    let data = match input_slice(data_ptr, data_len) {
         Ok(data) => data,
         Err(err) => return pack_error(err),
     };
@@ -522,17 +697,16 @@ pub extern "C" fn png_sync_write(
     let options = EncodeOptions {
         width,
         height,
-        gamma_scaled,
         color_type,
         bit_depth,
         input_color_type,
         input_has_alpha: input_has_alpha != 0,
         bg: [bg_red as u16, bg_green as u16, bg_blue as u16],
-        compression_level,
-        filter,
+        filter_mask,
+        fast_filter: fast_filter != 0,
     };
 
-    match encode_png(&data, &options) {
+    match filter_png(&data, &options) {
         Ok(output) => pack_result(STATUS_OK, [0, 0, 0, 0, 0, 0], &output),
         Err(err) => pack_error(err),
     }
