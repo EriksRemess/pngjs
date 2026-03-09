@@ -1,10 +1,16 @@
 # Benchmark
 
-Compares the npm-published `pngjs` package against the local implementation in this repo.
+Compares three implementations:
+
+- the npm-published `pngjs`
+- the local JS implementation in this repo
+- the Rust wasm implementation in `../wasm`
 
 ## Run
 
 ```sh
+cd ..
+npm run build:wasm
 cd benchmark
 npm install
 npm run bench

@@ -3,6 +3,7 @@ import eslintConfigPrettier from "eslint-config-prettier";
 
 const nodeGlobals = {
   Buffer: "readonly",
+  WebAssembly: "readonly",
   clearTimeout: "readonly",
   console: "readonly",
   process: "readonly",

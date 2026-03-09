@@ -2,3 +2,4 @@
 /test/imagediff.js
 .nyc_output
 coverage
+wasm/target

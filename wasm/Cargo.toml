@@ -1,0 +1,13 @@
+[package]
+name = "pngjs_wasm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"
+
+[dependencies]
+png = "0.18"

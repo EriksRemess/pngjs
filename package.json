@@ -46,10 +46,14 @@
     "test": "test"
   },
   "files": [
-    "lib/"
+    "lib/",
+    "wasm/png.js",
+    "wasm/png.wasm"
   ],
   "scripts": {
-    "test": "npm run lint && npm run prettier:check && node --test test/*-spec.js",
+    "build:wasm": "cargo build --manifest-path wasm/Cargo.toml --target wasm32-unknown-unknown --release && cp wasm/target/wasm32-unknown-unknown/release/pngjs_wasm.wasm wasm/png.wasm",
+    "prepack": "npm run build:wasm",
+    "test": "npm run build:wasm && npm run lint && npm run prettier:check && node --test test/*-spec.js",
     "lint": "eslint .",
     "prettier:write": "prettier --write .",
     "prettier:check": "prettier --check ."

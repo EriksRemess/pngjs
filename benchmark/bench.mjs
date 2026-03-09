@@ -3,7 +3,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
-import { PNG as LocalPNG } from "../lib/png.js";
+import { PNG as LocalPNG, PNGWasm as WasmPNG } from "../lib/png.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -101,30 +101,37 @@ function printHeader() {
     [
       "Fixture".padEnd(16),
       "Operation".padEnd(12),
-      "Upstream".padStart(14),
-      "Local".padStart(14),
+      "Impl".padEnd(10),
+      "Time".padStart(14),
       "Delta".padStart(14),
       "Faster".padStart(10),
     ].join(" "),
   );
-  console.log("-".repeat(86));
+  console.log("-".repeat(70));
 }
 
-function printResultRow(fixture, op, upstream, local) {
+function printResultRow(fixture, op, impl, baseline, result) {
   const deltaPct =
-    ((local.msPerOp - upstream.msPerOp) / upstream.msPerOp) * 100;
+    baseline == null
+      ? null
+      : ((result.msPerOp - baseline.msPerOp) / baseline.msPerOp) * 100;
   const faster =
-    local.msPerOp < upstream.msPerOp
-      ? `local ${(upstream.msPerOp / local.msPerOp).toFixed(2)}x`
-      : `upstream ${(local.msPerOp / upstream.msPerOp).toFixed(2)}x`;
+    baseline == null
+      ? "baseline"
+      : result.msPerOp < baseline.msPerOp
+        ? `${(baseline.msPerOp / result.msPerOp).toFixed(2)}x`
+        : `${(result.msPerOp / baseline.msPerOp).toFixed(2)}x`;
 
   console.log(
     [
       fixture.padEnd(16),
       op.padEnd(12),
-      formatMs(upstream.msPerOp).padStart(14),
-      formatMs(local.msPerOp).padStart(14),
-      `${deltaPct >= 0 ? "+" : ""}${deltaPct.toFixed(1)}%`.padStart(14),
+      impl.padEnd(10),
+      formatMs(result.msPerOp).padStart(14),
+      (deltaPct == null
+        ? "baseline"
+        : `${deltaPct >= 0 ? "+" : ""}${deltaPct.toFixed(1)}%`
+      ).padStart(14),
       faster.padStart(10),
     ].join(" "),
   );
@@ -145,6 +152,7 @@ async function main() {
   console.log(`Benchmark mode: ${quick ? "quick" : "full"}`);
   console.log("Upstream pngjs: benchmark/node_modules/pngjs");
   console.log("Local implementation: ../lib/png.js");
+  console.log("Wasm implementation: ../wasm/png.js");
 
   printHeader();
 
@@ -153,9 +161,10 @@ async function main() {
 
     const upstreamParsed = OriginalPNG.sync.read(buffer);
     const localParsed = LocalPNG.sync.read(buffer);
+    const wasmParsed = WasmPNG.sync.read(buffer);
 
     // Basic sanity check to catch API shape mismatches before benchmarking.
-    if (!upstreamParsed?.data || !localParsed?.data) {
+    if (!upstreamParsed?.data || !localParsed?.data || !wasmParsed?.data) {
       throw new Error(`Invalid parse result for fixture ${fixture.name}`);
     }
 
@@ -167,10 +176,17 @@ async function main() {
       () => LocalPNG.sync.read(buffer),
       fixture.iterations.syncRead,
     );
-    printResultRow(fixture.name, "sync.read", upstreamRead, localRead);
+    const wasmRead = await timeOperation(
+      () => WasmPNG.sync.read(buffer),
+      fixture.iterations.syncRead,
+    );
+    printResultRow(fixture.name, "sync.read", "upstream", null, upstreamRead);
+    printResultRow(fixture.name, "sync.read", "local", upstreamRead, localRead);
+    printResultRow(fixture.name, "sync.read", "wasm", upstreamRead, wasmRead);
 
     const upstreamWriteInput = clonePngMeta(upstreamParsed);
     const localWriteInput = clonePngMeta(localParsed);
+    const wasmWriteInput = clonePngMeta(wasmParsed);
 
     const upstreamWrite = await timeOperation(
       () => OriginalPNG.sync.write(upstreamWriteInput),
@@ -180,7 +196,25 @@ async function main() {
       () => LocalPNG.sync.write(localWriteInput),
       fixture.iterations.syncWrite,
     );
-    printResultRow(fixture.name, "sync.write", upstreamWrite, localWrite);
+    const wasmWrite = await timeOperation(
+      () => WasmPNG.sync.write(wasmWriteInput),
+      fixture.iterations.syncWrite,
+    );
+    printResultRow(fixture.name, "sync.write", "upstream", null, upstreamWrite);
+    printResultRow(
+      fixture.name,
+      "sync.write",
+      "local",
+      upstreamWrite,
+      localWrite,
+    );
+    printResultRow(
+      fixture.name,
+      "sync.write",
+      "wasm",
+      upstreamWrite,
+      wasmWrite,
+    );
 
     const upstreamAsync = await timeOperation(
       () => parseAsync(OriginalPNG, buffer),
@@ -190,7 +224,31 @@ async function main() {
       () => parseAsync(LocalPNG, buffer),
       fixture.iterations.asyncParse,
     );
-    printResultRow(fixture.name, "async.parse", upstreamAsync, localAsync);
+    const wasmAsync = await timeOperation(
+      () => parseAsync(WasmPNG, buffer),
+      fixture.iterations.asyncParse,
+    );
+    printResultRow(
+      fixture.name,
+      "async.parse",
+      "upstream",
+      null,
+      upstreamAsync,
+    );
+    printResultRow(
+      fixture.name,
+      "async.parse",
+      "local",
+      upstreamAsync,
+      localAsync,
+    );
+    printResultRow(
+      fixture.name,
+      "async.parse",
+      "wasm",
+      upstreamAsync,
+      wasmAsync,
+    );
   }
 
   console.log("");
