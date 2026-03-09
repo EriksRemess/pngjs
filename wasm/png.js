@@ -19,8 +19,22 @@ const memoryViewCache = {
   buffer: null,
 };
 
+function normalizeInputBuffer(input) {
+  if (Buffer.isBuffer(input)) {
+    return input;
+  }
+
+  if (ArrayBuffer.isView(input)) {
+    return Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+  }
+
+  return Buffer.from(input);
+}
+
 function createApi(instance) {
   const { exports } = instance;
+  let inputPtr = 0;
+  let inputCap = 0;
 
   function refreshViews() {
     if (memoryViewCache.buffer !== exports.memory.buffer) {
@@ -30,17 +44,32 @@ function createApi(instance) {
     }
   }
 
+  function ensureInputCapacity(len) {
+    const allocLen = Math.max(1, len);
+    if (allocLen <= inputCap) {
+      return inputPtr;
+    }
+
+    if (inputPtr !== 0) {
+      exports.dealloc(inputPtr, inputCap);
+    }
+
+    inputPtr = exports.alloc(allocLen);
+    inputCap = allocLen;
+    refreshViews();
+    return inputPtr;
+  }
+
   function copyIntoWasm(buffer) {
     refreshViews();
-    const ptr = exports.alloc(buffer.length);
-    refreshViews();
+    const ptr = ensureInputCapacity(buffer.length);
     memoryViewCache.u8.set(buffer, ptr);
     return ptr;
   }
 
   function copyFromWasm(ptr, len) {
     refreshViews();
-    return Buffer.from(memoryViewCache.u8.slice(ptr, ptr + len));
+    return Buffer.copyBytesFrom(memoryViewCache.u8, ptr, len);
   }
 
   function viewFromWasm(ptr, len) {
@@ -74,14 +103,13 @@ function createApi(instance) {
   }
 
   function callRead(input, options = {}) {
-    const buffer = Buffer.from(input);
+    const buffer = normalizeInputBuffer(input);
     const inputPtr = copyIntoWasm(buffer);
     const resultPtr = exports.png_sync_read(
       inputPtr,
       buffer.length,
       Number(options.checkCRC === false),
     );
-    exports.dealloc(inputPtr, buffer.length);
     const result = readResult(resultPtr);
 
     if (result.status !== 0) {
@@ -176,7 +204,6 @@ function createApi(instance) {
       meta.filterMask,
       Number(meta.fastFilter),
     );
-    exports.dealloc(dataPtr, data.length);
     const result = readResultView(resultPtr);
 
     if (result.status !== 0) {
