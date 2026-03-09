@@ -1,9 +1,4 @@
-node_modules
-.idea
-coverage
-examples/*.png
-wasm/*.wasm
-!wasm/png.wasm
-wasm/target
-browser\.js
-.nyc_output
+node_modules/
+/wasm/*.wasm
+!/wasm/png.wasm
+/wasm/target
