@@ -128,6 +128,7 @@ As input any color type is accepted (grayscale, rgb, palette, grayscale with alp
 - `bitDepth` - the bitDepth of the output, 8 or 16 bits. Input data is expected to have this bit depth.
   16 bit data is expected in the system endianness (Default: 8)
 - `inputHasAlpha` - whether the input bitmap has 4 bytes per pixel (rgb and alpha) or 3 (rgb - no alpha).
+- `strip` - when `true`, preserves the parsed source color type on write when possible, so re-encoding an RGB PNG does not automatically expand back to RGBA. Default: `false`
 - `bgColor` - an object containing red, green, and blue values between 0 and 255
   that is used when packing a PNG if alpha is not to be included (default: 255,255,255)
 

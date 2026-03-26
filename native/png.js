@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { Stream } from "node:stream";
 import { fileURLToPath } from "node:url";
 import Packer from "../lib/packer.js";
+import { prepareWriteOptions } from "../lib/write-options.js";
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -67,7 +68,7 @@ function loadNative() {
 const native = loadNative();
 
 function normalizeWriteOptions(png, options = {}) {
-  const packer = new Packer(options);
+  const packer = new Packer(prepareWriteOptions(png, options));
   const normalizedOptions = packer._options;
   const bitDepth = normalizedOptions.bitDepth;
   const bgColor = normalizedOptions.bgColor || {};
@@ -241,6 +242,13 @@ class PNG extends Stream {
     this.width = parsed.width;
     this.height = parsed.height;
     this.gamma = parsed.gamma;
+    this.colorType = parsed.colorType;
+    this.depth = parsed.depth;
+    this.interlace = parsed.interlace;
+    this.palette = parsed.palette;
+    this.color = parsed.color;
+    this.alpha = parsed.alpha;
+    this.bpp = parsed.bpp;
     this.data = parsed.data;
     this.emit("metadata", parsed);
     this.emit("parsed", this.data);

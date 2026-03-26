@@ -302,6 +302,31 @@ fn write_sample(out: &mut Vec<u8>, sample: u16, bit_depth: u32) {
     }
 }
 
+fn has_only_opaque_alpha8(data: &[u8]) -> bool {
+    let mut index = 3;
+    while index < data.len() {
+        if data[index] != 0xff {
+            return false;
+        }
+        index += 4;
+    }
+    true
+}
+
+fn copy_rgba_to_rgb8(data: &[u8]) -> Vec<u8> {
+    let mut out = vec![0_u8; (data.len() / 4) * 3];
+    let mut in_index = 0;
+    let mut out_index = 0;
+    while in_index < data.len() {
+        out[out_index] = data[in_index];
+        out[out_index + 1] = data[in_index + 1];
+        out[out_index + 2] = data[in_index + 2];
+        in_index += 4;
+        out_index += 3;
+    }
+    out
+}
+
 fn convert_pixels(
     data: &[u8],
     width: u32,
@@ -320,6 +345,15 @@ fn convert_pixels(
             "input data length mismatch: expected {expected_len}, got {}",
             data.len()
         ));
+    }
+
+    if bit_depth == 8
+        && input_has_alpha
+        && input_color_type == COLORTYPE_COLOR_ALPHA
+        && output_color_type == COLORTYPE_COLOR
+        && has_only_opaque_alpha8(data)
+    {
+        return Ok(copy_rgba_to_rgb8(data));
     }
 
     let max_value = if bit_depth == 16 { 65535.0 } else { 255.0 };

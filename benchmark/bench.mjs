@@ -37,6 +37,22 @@ const FIXTURES = [
       ? { syncRead: 3, syncWrite: 3, asyncParse: 2 }
       : { syncRead: 10, syncWrite: 8, asyncParse: 5 },
   },
+  {
+    name: "qr-poda",
+    file: path.join(rootDir, "benchmark/poda.png"),
+    iterations: quick
+      ? { syncRead: 20, syncWrite: 20, asyncParse: 8 }
+      : { syncRead: 80, syncWrite: 80, asyncParse: 30 },
+    qrWriteOptions: { colorType: 2, filterType: 0 },
+  },
+  {
+    name: "qr-poda2",
+    file: path.join(rootDir, "benchmark/poda2.png"),
+    iterations: quick
+      ? { syncRead: 20, syncWrite: 20, asyncParse: 8 }
+      : { syncRead: 80, syncWrite: 80, asyncParse: 30 },
+    qrWriteOptions: { colorType: 2, filterType: 0 },
+  },
 ];
 
 function resolvePngCtor(mod) {
@@ -160,6 +176,10 @@ function clonePngMeta(meta) {
   };
 }
 
+function cloneWriteOptions(options) {
+  return options ? { ...options } : undefined;
+}
+
 async function main() {
   const OriginalPNG = await loadOriginalPng();
   const nativeResult = await loadNativePng();
@@ -273,6 +293,60 @@ async function main() {
         upstreamWrite,
         nativeWrite,
       );
+    }
+
+    if (fixture.qrWriteOptions) {
+      const qrWriteOptions = cloneWriteOptions(fixture.qrWriteOptions);
+      const upstreamQrWrite = await timeOperation(
+        () => OriginalPNG.sync.write(upstreamWriteInput, qrWriteOptions),
+        fixture.iterations.syncWrite,
+      );
+      const localQrWrite = await timeOperation(
+        () => LocalPNG.sync.write(localWriteInput, qrWriteOptions),
+        fixture.iterations.syncWrite,
+      );
+      const wasmQrWrite = await timeOperation(
+        () => WasmPNG.sync.write(wasmWriteInput, qrWriteOptions),
+        fixture.iterations.syncWrite,
+      );
+      const nativeQrWrite =
+        NativePNG && nativeWriteInput
+          ? await timeOperation(
+              () => NativePNG.sync.write(nativeWriteInput, qrWriteOptions),
+              fixture.iterations.syncWrite,
+            )
+          : null;
+
+      printResultRow(
+        fixture.name,
+        "sync.write.rgb0",
+        "upstream",
+        null,
+        upstreamQrWrite,
+      );
+      printResultRow(
+        fixture.name,
+        "sync.write.rgb0",
+        "local",
+        upstreamQrWrite,
+        localQrWrite,
+      );
+      printResultRow(
+        fixture.name,
+        "sync.write.rgb0",
+        "wasm",
+        upstreamQrWrite,
+        wasmQrWrite,
+      );
+      if (nativeQrWrite) {
+        printResultRow(
+          fixture.name,
+          "sync.write.rgb0",
+          "native",
+          upstreamQrWrite,
+          nativeQrWrite,
+        );
+      }
     }
 
     const upstreamAsync = await timeOperation(
