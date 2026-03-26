@@ -1,5 +1,8 @@
 #![allow(non_snake_case)]
 
+use crc32fast::Hasher;
+use libc::{free, malloc};
+use libz_sys as zlib;
 use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 use png::{BitDepth, ColorType, Decoder, Transformations};
@@ -10,6 +13,11 @@ const COLORTYPE_COLOR: u32 = 2;
 const COLORTYPE_PALETTE_COLOR: u32 = 3;
 const COLORTYPE_ALPHA: u32 = 4;
 const COLORTYPE_COLOR_ALPHA: u32 = 6;
+const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+const TYPE_IHDR: [u8; 4] = *b"IHDR";
+const TYPE_IDAT: [u8; 4] = *b"IDAT";
+const TYPE_IEND: [u8; 4] = *b"IEND";
+const TYPE_GAMA: [u8; 4] = *b"gAMA";
 
 struct DecodeResult {
     width: u32,
@@ -19,6 +27,21 @@ struct DecodeResult {
     flags: u32,
     gamma_scaled: u32,
     data: Vec<u8>,
+}
+
+struct WriteOptions {
+    width: u32,
+    height: u32,
+    gamma_scaled: u32,
+    color_type: u32,
+    bit_depth: u32,
+    input_color_type: u32,
+    input_has_alpha: bool,
+    bg: [u16; 3],
+    filter_mask: u32,
+    fast_filter: bool,
+    deflate_level: u32,
+    deflate_strategy: u32,
 }
 
 const FLAG_COLOR: u32 = 1 << 0;
@@ -43,6 +66,33 @@ pub struct SyncReadResult {
 
 fn napi_error(message: impl Into<String>) -> napi::Error {
     napi::Error::from_reason(message.into())
+}
+
+fn write_be_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn pack_chunk(out: &mut Vec<u8>, chunk_type: [u8; 4], data: &[u8]) {
+    write_be_u32(out, data.len() as u32);
+    let chunk_start = out.len();
+    out.extend_from_slice(&chunk_type);
+    out.extend_from_slice(data);
+
+    let mut hasher = Hasher::new();
+    hasher.update(&out[chunk_start..]);
+    write_be_u32(out, hasher.finalize());
+}
+
+unsafe extern "C" fn zalloc_fn(
+    _opaque: zlib::voidpf,
+    items: zlib::uInt,
+    size: zlib::uInt,
+) -> zlib::voidpf {
+    unsafe { malloc(items as usize * size as usize) }
+}
+
+unsafe extern "C" fn zfree_fn(_opaque: zlib::voidpf, address: zlib::voidpf) {
+    unsafe { free(address.cast()) };
 }
 
 fn extract_gamma_scaled(input: &[u8]) -> Result<u32, String> {
@@ -596,6 +646,124 @@ fn filter_png(data: &[u8], options: &EncodeOptions) -> Result<Vec<u8>, String> {
     )
 }
 
+fn compress_filtered(filtered: &[u8], level: u32, _strategy: u32) -> Result<Vec<u8>, String> {
+    if filtered.len() > zlib::uInt::MAX as usize {
+        return Err("filtered data too large for zlib stream".to_string());
+    }
+
+    let strategy = match _strategy {
+        0..=4 => _strategy as i32,
+        _ => zlib::Z_DEFAULT_STRATEGY,
+    };
+
+    unsafe {
+        let mut stream = zlib::z_stream {
+            next_in: std::ptr::null_mut(),
+            avail_in: 0,
+            total_in: 0,
+            next_out: std::ptr::null_mut(),
+            avail_out: 0,
+            total_out: 0,
+            msg: std::ptr::null_mut(),
+            state: std::ptr::null_mut(),
+            zalloc: zalloc_fn,
+            zfree: zfree_fn,
+            opaque: std::ptr::null_mut(),
+            data_type: 0,
+            adler: 0,
+            reserved: 0,
+        };
+        let init_rc = zlib::deflateInit2_(
+            &mut stream,
+            level.min(9) as i32,
+            zlib::Z_DEFLATED,
+            15,
+            8,
+            strategy,
+            zlib::zlibVersion(),
+            std::mem::size_of::<zlib::z_stream>() as i32,
+        );
+        if init_rc != zlib::Z_OK {
+            return Err(format!("deflate init error: {init_rc}"));
+        }
+
+        let bound = zlib::deflateBound(&mut stream, filtered.len() as zlib::uLong) as usize;
+        let mut out = vec![0_u8; bound.max(64)];
+
+        stream.next_in = filtered.as_ptr() as *mut _;
+        stream.avail_in = filtered.len() as zlib::uInt;
+        stream.next_out = out.as_mut_ptr();
+        stream.avail_out = out.len() as zlib::uInt;
+
+        let mut rc = zlib::deflate(&mut stream, zlib::Z_FINISH);
+        while rc == zlib::Z_OK || rc == zlib::Z_BUF_ERROR {
+            let written = stream.total_out as usize;
+            let new_len = out.len().saturating_mul(2).max(written + 64);
+            out.resize(new_len, 0);
+            stream.next_out = out.as_mut_ptr().add(written);
+            stream.avail_out = (out.len() - written) as zlib::uInt;
+            rc = zlib::deflate(&mut stream, zlib::Z_FINISH);
+        }
+
+        let end_rc = zlib::deflateEnd(&mut stream);
+        if rc != zlib::Z_STREAM_END {
+            return Err(format!("deflate error: {rc}"));
+        }
+        if end_rc != zlib::Z_OK {
+            return Err(format!("deflate end error: {end_rc}"));
+        }
+
+        out.truncate(stream.total_out as usize);
+        Ok(out)
+    }
+}
+
+fn encode_png(data: &[u8], options: &WriteOptions) -> Result<Vec<u8>, String> {
+    let filtered = filter_png(
+        data,
+        &EncodeOptions {
+            width: options.width,
+            height: options.height,
+            color_type: options.color_type,
+            bit_depth: options.bit_depth,
+            input_color_type: options.input_color_type,
+            input_has_alpha: options.input_has_alpha,
+            bg: options.bg,
+            filter_mask: options.filter_mask,
+            fast_filter: options.fast_filter,
+        },
+    )?;
+    let compressed =
+        compress_filtered(&filtered, options.deflate_level, options.deflate_strategy)?;
+    if compressed.is_empty() {
+        return Err("bad png - invalid compressed data response".to_string());
+    }
+
+    let mut out = Vec::with_capacity(
+        PNG_SIGNATURE.len() + compressed.len() + 128,
+    );
+    out.extend_from_slice(&PNG_SIGNATURE);
+
+    let mut ihdr = Vec::with_capacity(13);
+    write_be_u32(&mut ihdr, options.width);
+    write_be_u32(&mut ihdr, options.height);
+    ihdr.push(options.bit_depth as u8);
+    ihdr.push(options.color_type as u8);
+    ihdr.push(0);
+    ihdr.push(0);
+    ihdr.push(0);
+    pack_chunk(&mut out, TYPE_IHDR, &ihdr);
+
+    if options.gamma_scaled != 0 {
+        let gamma = options.gamma_scaled.to_be_bytes();
+        pack_chunk(&mut out, TYPE_GAMA, &gamma);
+    }
+
+    pack_chunk(&mut out, TYPE_IDAT, &compressed);
+    pack_chunk(&mut out, TYPE_IEND, &[]);
+    Ok(out)
+}
+
 #[napi(js_name = "syncRead")]
 pub fn sync_read(input: Buffer, check_crc: Option<bool>) -> napi::Result<SyncReadResult> {
     let decoded = decode_png(input.as_ref(), !check_crc.unwrap_or(true)).map_err(napi_error)?;
@@ -651,5 +819,45 @@ pub fn filter_pack(
         fast_filter,
     };
     let output = filter_png(data.as_ref(), &options).map_err(napi_error)?;
+    Ok(output.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[napi(js_name = "syncWrite")]
+pub fn sync_write(
+    data: Buffer,
+    width: u32,
+    height: u32,
+    gamma_scaled: u32,
+    color_type: u32,
+    bit_depth: u32,
+    input_color_type: u32,
+    input_has_alpha: bool,
+    bg_red: u32,
+    bg_green: u32,
+    bg_blue: u32,
+    filter_mask: u32,
+    fast_filter: bool,
+    deflate_level: u32,
+    deflate_strategy: u32,
+) -> napi::Result<Buffer> {
+    let output = encode_png(
+        data.as_ref(),
+        &WriteOptions {
+            width,
+            height,
+            gamma_scaled,
+            color_type,
+            bit_depth,
+            input_color_type,
+            input_has_alpha,
+            bg: [bg_red as u16, bg_green as u16, bg_blue as u16],
+            filter_mask,
+            fast_filter,
+            deflate_level,
+            deflate_strategy,
+        },
+    )
+    .map_err(napi_error)?;
     Ok(output.into())
 }

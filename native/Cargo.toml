@@ -11,6 +11,9 @@ crate-type = ["cdylib"]
 panic = "abort"
 
 [dependencies]
+crc32fast = "1.5"
+libc = "0.2"
+libz-sys = { version = "1.1", default-features = false, features = ["zlib-ng"] }
 napi = { version = "2.16", default-features = false, features = ["napi8"] }
 napi-derive = "2.16"
 png = "0.18"

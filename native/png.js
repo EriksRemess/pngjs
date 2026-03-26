@@ -2,8 +2,6 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { Stream } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { deflateSync } from "node:zlib";
-import constants from "../lib/constants.js";
 import Packer from "../lib/packer.js";
 
 const require = createRequire(import.meta.url);
@@ -95,10 +93,10 @@ function normalizeWriteOptions(png, options = {}) {
   }
 
   return {
-    packer,
     width: png.width,
     height: png.height,
     gamma: png.gamma || 0,
+    gammaScaled: Math.max(0, Math.floor((png.gamma || 0) * 100000)),
     colorType: normalizedOptions.colorType,
     bitDepth,
     inputColorType: normalizedOptions.inputColorType,
@@ -108,6 +106,14 @@ function normalizeWriteOptions(png, options = {}) {
     bgBlue: bgColor.blue ?? (bitDepth === 16 ? 65535 : 255),
     filterMask,
     fastFilter: normalizedOptions.fastFilter === true,
+    deflateLevel:
+      normalizedOptions.deflateLevel != null
+        ? normalizedOptions.deflateLevel
+        : 6,
+    deflateStrategy:
+      normalizedOptions.deflateStrategy != null
+        ? normalizedOptions.deflateStrategy
+        : 3,
   };
 }
 
@@ -125,10 +131,11 @@ function callWrite(png, options) {
 
   const meta = normalizeWriteOptions(png, options);
   const data = normalizeInputBuffer(png.data);
-  const filtered = native.filterPack(
+  return native.syncWrite(
     data,
     meta.width,
     meta.height,
+    meta.gammaScaled,
     meta.colorType,
     meta.bitDepth,
     meta.inputColorType,
@@ -138,25 +145,9 @@ function callWrite(png, options) {
     meta.bgBlue,
     meta.filterMask,
     meta.fastFilter,
+    meta.deflateLevel,
+    meta.deflateStrategy,
   );
-  const compressed = deflateSync(filtered, meta.packer.getDeflateOptions());
-
-  if (!compressed?.length) {
-    throw new Error("bad png - invalid compressed data response");
-  }
-
-  const chunks = [
-    Buffer.from(constants.PNG_SIGNATURE),
-    meta.packer.packIHDR(meta.width, meta.height),
-  ];
-
-  if (meta.gamma) {
-    chunks.push(meta.packer.packGAMA(meta.gamma));
-  }
-
-  chunks.push(meta.packer.packIDAT(compressed));
-  chunks.push(meta.packer.packIEND());
-  return Buffer.concat(chunks);
 }
 
 class PNG extends Stream {
