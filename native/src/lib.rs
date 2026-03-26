@@ -646,13 +646,13 @@ fn filter_png(data: &[u8], options: &EncodeOptions) -> Result<Vec<u8>, String> {
     )
 }
 
-fn compress_filtered(filtered: &[u8], level: u32, _strategy: u32) -> Result<Vec<u8>, String> {
+fn compress_filtered(filtered: &[u8], level: u32, deflate_strategy: u32) -> Result<Vec<u8>, String> {
     if filtered.len() > zlib::uInt::MAX as usize {
         return Err("filtered data too large for zlib stream".to_string());
     }
 
-    let strategy = match _strategy {
-        0..=4 => _strategy as i32,
+    let strategy = match deflate_strategy {
+        0..=4 => deflate_strategy as i32,
         _ => zlib::Z_DEFAULT_STRATEGY,
     };
 
