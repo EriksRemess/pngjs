@@ -1,0 +1,19 @@
+[package]
+name = "pngjs_native"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"
+
+[dependencies]
+napi = { version = "2.16", default-features = false, features = ["napi8"] }
+napi-derive = "2.16"
+png = "0.18"
+
+[build-dependencies]
+napi-build = "2.1"

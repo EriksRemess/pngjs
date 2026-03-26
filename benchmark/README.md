@@ -1,16 +1,18 @@
 # Benchmark
 
-Compares three implementations:
+Compares four implementations:
 
 - the npm-published `pngjs`
 - the local JS implementation in this repo
 - the Rust wasm implementation in `../wasm`
+- the Rust N-API implementation in `../native` when built
 
 ## Run
 
 ```sh
 cd ..
 npm run build:wasm
+npm run build:native
 cd benchmark
 npm install
 npm run bench

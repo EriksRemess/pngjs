@@ -2,3 +2,10 @@ node_modules/
 /wasm/*.wasm
 !/wasm/png.wasm
 /wasm/target
+/native/target
+/native/*.node
+!/native/pngjs-native-linux-x64-gnu.node
+!/native/pngjs-native-linux-x64-musl.node
+!/native/pngjs-native-darwin-arm64.node
+!/native/pngjs-native-darwin-x64.node
+!/native/pngjs-native-win32-x64-msvc.node

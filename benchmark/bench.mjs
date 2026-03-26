@@ -3,7 +3,8 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
-import { PNG as LocalPNG, PNGWasm as WasmPNG } from "../lib/png.js";
+import { PNG as LocalPNG } from "../lib/png.js";
+import { PNG as WasmPNG } from "../wasm/png.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -58,6 +59,19 @@ async function loadOriginalPng() {
     console.error("");
     console.error(err?.stack || err);
     process.exit(1);
+  }
+}
+
+async function loadNativePng() {
+  try {
+    const mod = await import("../native/png.js");
+    const PNG = resolvePngCtor(mod);
+    if (!PNG?.sync?.read || !PNG?.sync?.write) {
+      throw new Error("Loaded module does not expose PNG.sync.read/write");
+    }
+    return PNG;
+  } catch (err) {
+    return { error: err };
   }
 }
 
@@ -148,11 +162,18 @@ function clonePngMeta(meta) {
 
 async function main() {
   const OriginalPNG = await loadOriginalPng();
+  const nativeResult = await loadNativePng();
+  const NativePNG = nativeResult?.error ? null : nativeResult;
 
   console.log(`Benchmark mode: ${quick ? "quick" : "full"}`);
   console.log("Upstream pngjs: benchmark/node_modules/pngjs");
   console.log("Local implementation: ../lib/png.js");
   console.log("Wasm implementation: ../wasm/png.js");
+  console.log(
+    NativePNG
+      ? "Native implementation: ../native/png.js"
+      : "Native implementation: unavailable (run: npm run build:native)",
+  );
 
   printHeader();
 
@@ -162,9 +183,15 @@ async function main() {
     const upstreamParsed = OriginalPNG.sync.read(buffer);
     const localParsed = LocalPNG.sync.read(buffer);
     const wasmParsed = WasmPNG.sync.read(buffer);
+    const nativeParsed = NativePNG ? NativePNG.sync.read(buffer) : null;
 
     // Basic sanity check to catch API shape mismatches before benchmarking.
-    if (!upstreamParsed?.data || !localParsed?.data || !wasmParsed?.data) {
+    if (
+      !upstreamParsed?.data ||
+      !localParsed?.data ||
+      !wasmParsed?.data ||
+      (NativePNG && !nativeParsed?.data)
+    ) {
       throw new Error(`Invalid parse result for fixture ${fixture.name}`);
     }
 
@@ -180,13 +207,29 @@ async function main() {
       () => WasmPNG.sync.read(buffer),
       fixture.iterations.syncRead,
     );
+    const nativeRead = NativePNG
+      ? await timeOperation(
+          () => NativePNG.sync.read(buffer),
+          fixture.iterations.syncRead,
+        )
+      : null;
     printResultRow(fixture.name, "sync.read", "upstream", null, upstreamRead);
     printResultRow(fixture.name, "sync.read", "local", upstreamRead, localRead);
     printResultRow(fixture.name, "sync.read", "wasm", upstreamRead, wasmRead);
+    if (nativeRead) {
+      printResultRow(
+        fixture.name,
+        "sync.read",
+        "native",
+        upstreamRead,
+        nativeRead,
+      );
+    }
 
     const upstreamWriteInput = clonePngMeta(upstreamParsed);
     const localWriteInput = clonePngMeta(localParsed);
     const wasmWriteInput = clonePngMeta(wasmParsed);
+    const nativeWriteInput = nativeParsed ? clonePngMeta(nativeParsed) : null;
 
     const upstreamWrite = await timeOperation(
       () => OriginalPNG.sync.write(upstreamWriteInput),
@@ -200,6 +243,13 @@ async function main() {
       () => WasmPNG.sync.write(wasmWriteInput),
       fixture.iterations.syncWrite,
     );
+    const nativeWrite =
+      NativePNG && nativeWriteInput
+        ? await timeOperation(
+            () => NativePNG.sync.write(nativeWriteInput),
+            fixture.iterations.syncWrite,
+          )
+        : null;
     printResultRow(fixture.name, "sync.write", "upstream", null, upstreamWrite);
     printResultRow(
       fixture.name,
@@ -215,6 +265,15 @@ async function main() {
       upstreamWrite,
       wasmWrite,
     );
+    if (nativeWrite) {
+      printResultRow(
+        fixture.name,
+        "sync.write",
+        "native",
+        upstreamWrite,
+        nativeWrite,
+      );
+    }
 
     const upstreamAsync = await timeOperation(
       () => parseAsync(OriginalPNG, buffer),
@@ -228,6 +287,12 @@ async function main() {
       () => parseAsync(WasmPNG, buffer),
       fixture.iterations.asyncParse,
     );
+    const nativeAsync = NativePNG
+      ? await timeOperation(
+          () => parseAsync(NativePNG, buffer),
+          fixture.iterations.asyncParse,
+        )
+      : null;
     printResultRow(
       fixture.name,
       "async.parse",
@@ -249,6 +314,15 @@ async function main() {
       upstreamAsync,
       wasmAsync,
     );
+    if (nativeAsync) {
+      printResultRow(
+        fixture.name,
+        "async.parse",
+        "native",
+        upstreamAsync,
+        nativeAsync,
+      );
+    }
   }
 
   console.log("");

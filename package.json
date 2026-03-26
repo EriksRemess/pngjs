@@ -35,7 +35,9 @@
   "type": "module",
   "main": "./lib/png.js",
   "exports": {
-    ".": "./lib/png.js"
+    ".": "./lib/png.js",
+    "./native": "./native/png.js",
+    "./wasm": "./wasm/png.js"
   },
   "imports": {
     "#lib/*": "./lib/*.js"
@@ -47,10 +49,14 @@
   },
   "files": [
     "lib/",
+    "native/png.js",
+    "native/*.node",
+    "native/README.md",
     "wasm/png.js",
     "wasm/png.wasm"
   ],
   "scripts": {
+    "build:native": "cargo build --manifest-path native/Cargo.toml --release && node native/copy-artifact.mjs",
     "build:wasm": "cargo build --manifest-path wasm/Cargo.toml --target wasm32-unknown-unknown --release && cp wasm/target/wasm32-unknown-unknown/release/pngjs_wasm.wasm wasm/png.wasm",
     "prepack": "npm run build:wasm",
     "test": "npm run build:wasm && npm run lint && npm run prettier:check && node --test test/*-spec.js",

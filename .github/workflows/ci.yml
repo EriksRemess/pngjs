@@ -9,33 +9,30 @@ permissions:
   contents: read
 
 jobs:
-  test_on_node:
-    name: Test
+  test:
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
     strategy:
       matrix:
         os: [ubuntu-latest]
-        node: [18.x, 17.x, 16.x, 14.x]
+        node: ["24.x"]
         include:
           - os: windows-latest
-            node: "16.x"
-          - os: macOS-latest
-            node: "16.x"
+            node: "24.x"
+          - os: macos-latest
+            node: "24.x"
     runs-on: ${{ matrix.os }}
     steps:
       - name: Set git to use LF
+        shell: bash
         run: |
           git config --global core.autocrlf false
           git config --global core.eol lf
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - name: Install Packages
-        run: yarn
+          cache: npm
+      - name: Install packages
+        run: npm ci
       - name: Test
-        run: yarn test
-      - if: matrix.os == 'windows-latest'
-        name: Codecov
-        run: yarn coverage
-      - if: matrix.os == 'windows-latest'
-        uses: codecov/codecov-action@v3
+        run: npm test
