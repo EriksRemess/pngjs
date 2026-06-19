@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 
 use crc32fast::Hasher;
+use fdeflate::{Compressor, StoredOnlyCompressor};
 use libc::{free, malloc};
 use libz_sys as zlib;
 use napi::bindgen_prelude::Buffer;
@@ -42,12 +43,33 @@ struct WriteOptions {
     fast_filter: bool,
     deflate_level: u32,
     deflate_strategy: u32,
+    fast_compression: bool,
+}
+
+#[napi(object)]
+pub struct SyncWriteOptions {
+    pub width: u32,
+    pub height: u32,
+    pub gammaScaled: u32,
+    pub colorType: u32,
+    pub bitDepth: u32,
+    pub inputColorType: u32,
+    pub inputHasAlpha: bool,
+    pub bgRed: u32,
+    pub bgGreen: u32,
+    pub bgBlue: u32,
+    pub filterMask: u32,
+    pub fastFilter: bool,
+    pub deflateLevel: u32,
+    pub deflateStrategy: u32,
+    pub fastCompression: bool,
 }
 
 const FLAG_COLOR: u32 = 1 << 0;
 const FLAG_ALPHA: u32 = 1 << 1;
 const FLAG_PALETTE: u32 = 1 << 2;
 const FLAG_INTERLACE: u32 = 1 << 3;
+const FAST_COMPRESSION_MIN_BYTES: usize = 8 * 1024 * 1024;
 
 #[napi(object)]
 pub struct SyncReadResult {
@@ -95,55 +117,6 @@ unsafe extern "C" fn zfree_fn(_opaque: zlib::voidpf, address: zlib::voidpf) {
     unsafe { free(address.cast()) };
 }
 
-fn extract_gamma_scaled(input: &[u8]) -> Result<u32, String> {
-    if input.len() < 8 {
-        return Ok(0);
-    }
-
-    let mut offset = 8_usize;
-    let mut gamma_scaled = 0_u32;
-    while offset + 12 <= input.len() {
-        let length = u32::from_be_bytes([
-            input[offset],
-            input[offset + 1],
-            input[offset + 2],
-            input[offset + 3],
-        ]) as usize;
-        let type_offset = offset + 4;
-        let data_offset = offset + 8;
-        let chunk_end = data_offset.saturating_add(length);
-        let next_offset = chunk_end.saturating_add(4);
-
-        if next_offset > input.len() {
-            return Ok(gamma_scaled);
-        }
-
-        let chunk_type = &input[type_offset..type_offset + 4];
-        for &char_code in chunk_type {
-            if char_code < 65 || char_code > 122 || (char_code > 90 && char_code < 97) {
-                return Err("Invalid chunk type".to_string());
-            }
-        }
-
-        if chunk_type == b"gAMA" && length == 4 {
-            gamma_scaled = u32::from_be_bytes([
-                input[data_offset],
-                input[data_offset + 1],
-                input[data_offset + 2],
-                input[data_offset + 3],
-            ]);
-        }
-
-        if chunk_type == b"IEND" {
-            break;
-        }
-
-        offset = next_offset;
-    }
-
-    Ok(gamma_scaled)
-}
-
 fn bpp_for_color_type(color_type: ColorType) -> u32 {
     match color_type {
         ColorType::Grayscale => 1,
@@ -173,25 +146,31 @@ fn depth_to_u32(bit_depth: BitDepth) -> u32 {
     }
 }
 
-fn normalize_to_rgba(bytes: &[u8], color_type: ColorType) -> Result<Vec<u8>, String> {
+fn normalize_to_rgba(
+    mut bytes: Vec<u8>,
+    len: usize,
+    color_type: ColorType,
+) -> Result<Vec<u8>, String> {
+    bytes.truncate(len);
+
     match color_type {
-        ColorType::Rgba => Ok(bytes.to_vec()),
+        ColorType::Rgba => Ok(bytes),
         ColorType::Rgb => {
-            let mut out = Vec::with_capacity((bytes.len() / 3) * 4);
+            let mut out = Vec::with_capacity((len / 3) * 4);
             for chunk in bytes.chunks_exact(3) {
                 out.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
             }
             Ok(out)
         }
         ColorType::Grayscale => {
-            let mut out = Vec::with_capacity(bytes.len() * 4);
-            for &sample in bytes {
+            let mut out = Vec::with_capacity(len * 4);
+            for sample in bytes.iter().copied() {
                 out.extend_from_slice(&[sample, sample, sample, 255]);
             }
             Ok(out)
         }
         ColorType::GrayscaleAlpha => {
-            let mut out = Vec::with_capacity((bytes.len() / 2) * 4);
+            let mut out = Vec::with_capacity((len / 2) * 4);
             for chunk in bytes.chunks_exact(2) {
                 out.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
             }
@@ -204,7 +183,6 @@ fn normalize_to_rgba(bytes: &[u8], color_type: ColorType) -> Result<Vec<u8>, Str
 }
 
 fn decode_png(input: &[u8], ignore_checksums: bool) -> Result<DecodeResult, String> {
-    let gamma_scaled = extract_gamma_scaled(input)?;
     let cursor = Cursor::new(input);
     let mut decoder = Decoder::new(cursor);
     decoder.set_transformations(Transformations::EXPAND | Transformations::STRIP_16);
@@ -213,21 +191,29 @@ fn decode_png(input: &[u8], ignore_checksums: bool) -> Result<DecodeResult, Stri
     let mut reader = decoder
         .read_info()
         .map_err(|err| format!("decode error: {err}"))?;
-    let info = reader.info();
-    let width = info.width;
-    let height = info.height;
-    let depth = depth_to_u32(info.bit_depth);
-    let color_type = info.color_type;
-    let has_trns = info.trns.is_some();
-    let flags = (u32::from(!matches!(
-        color_type,
-        ColorType::Grayscale | ColorType::GrayscaleAlpha
-    )) * FLAG_COLOR)
-        | (u32::from(matches!(color_type, ColorType::Indexed)) * FLAG_PALETTE)
-        | (u32::from(
-            matches!(color_type, ColorType::Rgba | ColorType::GrayscaleAlpha) || has_trns,
-        ) * FLAG_ALPHA)
-        | (u32::from(info.interlaced) * FLAG_INTERLACE);
+    let (width, height, depth, color_type, flags, gamma_scaled) = {
+        let info = reader.info();
+        let color_type = info.color_type;
+        let has_trns = info.trns.is_some();
+        let flags = (u32::from(!matches!(
+            color_type,
+            ColorType::Grayscale | ColorType::GrayscaleAlpha
+        )) * FLAG_COLOR)
+            | (u32::from(matches!(color_type, ColorType::Indexed)) * FLAG_PALETTE)
+            | (u32::from(
+                matches!(color_type, ColorType::Rgba | ColorType::GrayscaleAlpha) || has_trns,
+            ) * FLAG_ALPHA)
+            | (u32::from(info.interlaced) * FLAG_INTERLACE);
+
+        (
+            info.width,
+            info.height,
+            depth_to_u32(info.bit_depth),
+            color_type,
+            flags,
+            info.gama_chunk.map_or(0, |gamma| gamma.into_scaled()),
+        )
+    };
 
     let output_buffer_size = reader
         .output_buffer_size()
@@ -236,7 +222,7 @@ fn decode_png(input: &[u8], ignore_checksums: bool) -> Result<DecodeResult, Stri
     let output_info = reader
         .next_frame(&mut buf)
         .map_err(|err| format!("decode error: {err}"))?;
-    let data = normalize_to_rgba(&buf[..output_info.buffer_size()], output_info.color_type)?;
+    let data = normalize_to_rgba(buf, output_info.buffer_size(), output_info.color_type)?;
 
     Ok(DecodeResult {
         width,
@@ -327,6 +313,7 @@ fn copy_rgba_to_rgb8(data: &[u8]) -> Vec<u8> {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn convert_pixels(
     data: &[u8],
     width: u32,
@@ -680,7 +667,11 @@ fn filter_png(data: &[u8], options: &EncodeOptions) -> Result<Vec<u8>, String> {
     )
 }
 
-fn compress_filtered(filtered: &[u8], level: u32, deflate_strategy: u32) -> Result<Vec<u8>, String> {
+fn compress_filtered(
+    filtered: &[u8],
+    level: u32,
+    deflate_strategy: u32,
+) -> Result<Vec<u8>, String> {
     if filtered.len() > zlib::uInt::MAX as usize {
         return Err("filtered data too large for zlib stream".to_string());
     }
@@ -752,6 +743,47 @@ fn compress_filtered(filtered: &[u8], level: u32, deflate_strategy: u32) -> Resu
     }
 }
 
+fn compress_fast(filtered: &[u8]) -> Result<Vec<u8>, String> {
+    let mut compressor = Compressor::new(Vec::with_capacity(filtered.len() / 4 + 64))
+        .map_err(|err| format!("fdeflate init error: {err}"))?;
+    compressor
+        .write_data(filtered)
+        .map_err(|err| format!("fdeflate error: {err}"))?;
+    let compressed = compressor
+        .finish()
+        .map_err(|err| format!("fdeflate finish error: {err}"))?;
+
+    if compressed.len() <= stored_compressed_size(filtered.len()) {
+        return Ok(compressed);
+    }
+
+    let mut compressor = StoredOnlyCompressor::new(Cursor::new(Vec::with_capacity(
+        filtered.len() + filtered.len() / u16::MAX as usize * 5 + 16,
+    )))
+    .map_err(|err| format!("stored deflate init error: {err}"))?;
+    compressor
+        .write_data(filtered)
+        .map_err(|err| format!("stored deflate error: {err}"))?;
+    Ok(compressor
+        .finish()
+        .map_err(|err| format!("stored deflate finish error: {err}"))?
+        .into_inner())
+}
+
+fn stored_compressed_size(raw_size: usize) -> usize {
+    (raw_size.saturating_sub(1) / u16::MAX as usize) * (u16::MAX as usize + 5)
+        + (raw_size % u16::MAX as usize + 5)
+        + 6
+}
+
+fn should_use_fast_compression(options: &WriteOptions, filtered_len: usize) -> bool {
+    options.fast_compression
+        && filtered_len >= FAST_COMPRESSION_MIN_BYTES
+        && options.filter_mask != 1
+        && options.deflate_strategy == zlib::Z_RLE as u32
+        && (1..=6).contains(&options.deflate_level)
+}
+
 fn encode_png(data: &[u8], options: &WriteOptions) -> Result<Vec<u8>, String> {
     let filtered = filter_png(
         data,
@@ -767,15 +799,16 @@ fn encode_png(data: &[u8], options: &WriteOptions) -> Result<Vec<u8>, String> {
             fast_filter: options.fast_filter,
         },
     )?;
-    let compressed =
-        compress_filtered(&filtered, options.deflate_level, options.deflate_strategy)?;
+    let compressed = if should_use_fast_compression(options, filtered.len()) {
+        compress_fast(&filtered)?
+    } else {
+        compress_filtered(&filtered, options.deflate_level, options.deflate_strategy)?
+    };
     if compressed.is_empty() {
         return Err("bad png - invalid compressed data response".to_string());
     }
 
-    let mut out = Vec::with_capacity(
-        PNG_SIGNATURE.len() + compressed.len() + 128,
-    );
+    let mut out = Vec::with_capacity(PNG_SIGNATURE.len() + compressed.len() + 128);
     out.extend_from_slice(&PNG_SIGNATURE);
 
     let mut ihdr = Vec::with_capacity(13);
@@ -856,40 +889,28 @@ pub fn filter_pack(
     Ok(output.into())
 }
 
-#[allow(clippy::too_many_arguments)]
 #[napi(js_name = "syncWrite")]
-pub fn sync_write(
-    data: Buffer,
-    width: u32,
-    height: u32,
-    gamma_scaled: u32,
-    color_type: u32,
-    bit_depth: u32,
-    input_color_type: u32,
-    input_has_alpha: bool,
-    bg_red: u32,
-    bg_green: u32,
-    bg_blue: u32,
-    filter_mask: u32,
-    fast_filter: bool,
-    deflate_level: u32,
-    deflate_strategy: u32,
-) -> napi::Result<Buffer> {
+pub fn sync_write(data: Buffer, options: SyncWriteOptions) -> napi::Result<Buffer> {
     let output = encode_png(
         data.as_ref(),
         &WriteOptions {
-            width,
-            height,
-            gamma_scaled,
-            color_type,
-            bit_depth,
-            input_color_type,
-            input_has_alpha,
-            bg: [bg_red as u16, bg_green as u16, bg_blue as u16],
-            filter_mask,
-            fast_filter,
-            deflate_level,
-            deflate_strategy,
+            width: options.width,
+            height: options.height,
+            gamma_scaled: options.gammaScaled,
+            color_type: options.colorType,
+            bit_depth: options.bitDepth,
+            input_color_type: options.inputColorType,
+            input_has_alpha: options.inputHasAlpha,
+            bg: [
+                options.bgRed as u16,
+                options.bgGreen as u16,
+                options.bgBlue as u16,
+            ],
+            filter_mask: options.filterMask,
+            fast_filter: options.fastFilter,
+            deflate_level: options.deflateLevel,
+            deflate_strategy: options.deflateStrategy,
+            fast_compression: options.fastCompression,
         },
     )
     .map_err(napi_error)?;

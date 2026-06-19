@@ -115,6 +115,7 @@ function normalizeWriteOptions(png, options = {}) {
       normalizedOptions.deflateStrategy != null
         ? normalizedOptions.deflateStrategy
         : 3,
+    fastCompression: normalizedOptions.fastCompression !== false,
   };
 }
 
@@ -132,23 +133,7 @@ function callWrite(png, options) {
 
   const meta = normalizeWriteOptions(png, options);
   const data = normalizeInputBuffer(png.data);
-  return native.syncWrite(
-    data,
-    meta.width,
-    meta.height,
-    meta.gammaScaled,
-    meta.colorType,
-    meta.bitDepth,
-    meta.inputColorType,
-    meta.inputHasAlpha,
-    meta.bgRed,
-    meta.bgGreen,
-    meta.bgBlue,
-    meta.filterMask,
-    meta.fastFilter,
-    meta.deflateLevel,
-    meta.deflateStrategy,
-  );
+  return native.syncWrite(data, meta);
 }
 
 class PNG extends Stream {

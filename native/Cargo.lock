@@ -233,6 +233,7 @@ name = "pngjs_native"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "fdeflate",
  "libc",
  "libz-sys",
  "napi",
