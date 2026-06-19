@@ -43,7 +43,7 @@ const FIXTURES = [
     iterations: quick
       ? { syncRead: 20, syncWrite: 20, asyncParse: 8 }
       : { syncRead: 80, syncWrite: 80, asyncParse: 30 },
-    qrWriteOptions: { colorType: 2, filterType: 0 },
+    qrWriteOptions: { filterType: 2 },
   },
   {
     name: "qr-poda2",
@@ -51,7 +51,7 @@ const FIXTURES = [
     iterations: quick
       ? { syncRead: 20, syncWrite: 20, asyncParse: 8 }
       : { syncRead: 80, syncWrite: 80, asyncParse: 30 },
-    qrWriteOptions: { colorType: 2, filterType: 0 },
+    qrWriteOptions: { filterType: 2 },
   },
 ];
 
@@ -319,21 +319,21 @@ async function main() {
 
       printResultRow(
         fixture.name,
-        "sync.write.rgb0",
+        "sync.write.qr",
         "upstream",
         null,
         upstreamQrWrite,
       );
       printResultRow(
         fixture.name,
-        "sync.write.rgb0",
+        "sync.write.qr",
         "local",
         upstreamQrWrite,
         localQrWrite,
       );
       printResultRow(
         fixture.name,
-        "sync.write.rgb0",
+        "sync.write.qr",
         "wasm",
         upstreamQrWrite,
         wasmQrWrite,
@@ -341,7 +341,7 @@ async function main() {
       if (nativeQrWrite) {
         printResultRow(
           fixture.name,
-          "sync.write.rgb0",
+          "sync.write.qr",
           "native",
           upstreamQrWrite,
           nativeQrWrite,

@@ -7,7 +7,7 @@ platform-tagged binaries in this folder.
 
 ## Options
 
-The native writer uses a fast compression path for large default RLE writes.
+The native writer uses a fast compression path for default RLE writes.
 Pass `{ fastCompression: false }` to `PNG.sync.write` or the `PNG` constructor
 to force the zlib-ng path for all image sizes.
 

@@ -69,7 +69,6 @@ const FLAG_COLOR: u32 = 1 << 0;
 const FLAG_ALPHA: u32 = 1 << 1;
 const FLAG_PALETTE: u32 = 1 << 2;
 const FLAG_INTERLACE: u32 = 1 << 3;
-const FAST_COMPRESSION_MIN_BYTES: usize = 8 * 1024 * 1024;
 
 #[napi(object)]
 pub struct SyncReadResult {
@@ -776,10 +775,8 @@ fn stored_compressed_size(raw_size: usize) -> usize {
         + 6
 }
 
-fn should_use_fast_compression(options: &WriteOptions, filtered_len: usize) -> bool {
+fn should_use_fast_compression(options: &WriteOptions) -> bool {
     options.fast_compression
-        && filtered_len >= FAST_COMPRESSION_MIN_BYTES
-        && options.filter_mask != 1
         && options.deflate_strategy == zlib::Z_RLE as u32
         && (1..=6).contains(&options.deflate_level)
 }
@@ -799,7 +796,7 @@ fn encode_png(data: &[u8], options: &WriteOptions) -> Result<Vec<u8>, String> {
             fast_filter: options.fast_filter,
         },
     )?;
-    let compressed = if should_use_fast_compression(options, filtered.len()) {
+    let compressed = if should_use_fast_compression(options) {
         compress_fast(&filtered)?
     } else {
         compress_filtered(&filtered, options.deflate_level, options.deflate_strategy)?
