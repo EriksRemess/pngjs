@@ -1,6 +1,6 @@
 {
-  "name": "pngjs",
-  "version": "7.0.0",
+  "name": "@eriksremess/pngjs",
+  "version": "7.0.1",
   "description": "PNG encoder/decoder for Node.js with async & sync APIs, supporting any bit size and interlace.",
   "contributors": [
     "Alexandre Paré",
@@ -16,7 +16,7 @@
     "toriningen",
     "Eugene Kulabuhov"
   ],
-  "homepage": "https://github.com/pngjs/pngjs",
+  "homepage": "https://github.com/EriksRemess/pngjs",
   "keywords": [
     "PNG",
     "decoder",
@@ -30,7 +30,7 @@
     "pngjs"
   ],
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   },
   "type": "module",
   "main": "./lib/png.js",
@@ -66,11 +66,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git://github.com/pngjs/pngjs.git"
+    "url": "https://github.com/EriksRemess/pngjs.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   },
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/pngjs/pngjs/issues"
+    "url": "https://github.com/EriksRemess/pngjs/issues"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
