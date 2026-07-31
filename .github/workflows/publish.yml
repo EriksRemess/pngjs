@@ -7,11 +7,61 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
+  build-native:
+    name: Build native (${{ matrix.target }})
+    strategy:
+      matrix:
+        include:
+          - target: linux-x64-gnu
+            os: ubuntu-22.04
+            artifact: pngjs-native-linux-x64-gnu.node
+          - target: darwin-arm64
+            os: macos-26
+            artifact: pngjs-native-darwin-arm64.node
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26.x"
+      - name: Build native addon
+        run: npm run build:native
+      - name: Test native addon
+        shell: bash
+        run: |
+          test -f "native/${{ matrix.artifact }}"
+          node --input-type=module <<'NODE'
+          import { PNG } from "./native/png.js";
+
+          const image = new PNG({ width: 1, height: 1 });
+          image.data.set([255, 0, 0, 255]);
+          const encoded = PNG.sync.write(image);
+          const decoded = PNG.sync.read(encoded);
+
+          if (
+            decoded.width !== 1 ||
+            decoded.height !== 1 ||
+            !Buffer.from(decoded.data).equals(image.data)
+          ) {
+            throw new Error("Native addon smoke test failed");
+          }
+          NODE
+      - name: Upload native addon
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.target }}
+          path: native/${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 1
+
   publish:
+    needs: build-native
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -22,6 +72,16 @@ jobs:
           cache: npm
       - name: Install packages
         run: npm ci
+      - name: Download native addons
+        uses: actions/download-artifact@v8
+        with:
+          pattern: native-*
+          path: native
+          merge-multiple: true
+      - name: Verify native addons
+        run: |
+          test -f native/pngjs-native-linux-x64-gnu.node
+          test -f native/pngjs-native-darwin-arm64.node
       - name: Install WASM target
         run: rustup target add wasm32-unknown-unknown
       - name: Test

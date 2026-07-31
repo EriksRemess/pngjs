@@ -14,20 +14,16 @@ function getLinuxLibc() {
 }
 
 function getBinaryName() {
-  if (process.platform === "linux" && process.arch === "x64") {
-    return `pngjs-native-linux-x64-${getLinuxLibc()}.node`;
+  if (
+    process.platform === "linux" &&
+    process.arch === "x64" &&
+    getLinuxLibc() === "gnu"
+  ) {
+    return "pngjs-native-linux-x64-gnu.node";
   }
 
   if (process.platform === "darwin" && process.arch === "arm64") {
     return "pngjs-native-darwin-arm64.node";
-  }
-
-  if (process.platform === "darwin" && process.arch === "x64") {
-    return "pngjs-native-darwin-x64.node";
-  }
-
-  if (process.platform === "win32" && process.arch === "x64") {
-    return "pngjs-native-win32-x64-msvc.node";
   }
 
   throw new Error(
